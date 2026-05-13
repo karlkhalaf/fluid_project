@@ -192,8 +192,42 @@ public:
         //      Start with a unit square
         //      For all other sites Pj (optionally, only k nearest neighbors) :
         //          Clip it with bisector of [Pi,Pj]
-        //      (Lab 3, fluids) : also clip it by a disk of radius sqrt(w_i - w_air) centered at Pi
+
+        int N = points.size();
+        cells.resize(N);
+
+        if (weights.size() != points.size()) {
+            weights.assign(points.size(), 0.0);
+        }
+
+    #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < N; i++) {
+
+            Polygon cell;
+
+            cell.vertices.push_back(Vector(0, 0));
+            cell.vertices.push_back(Vector(1, 0));
+            cell.vertices.push_back(Vector(1, 1));
+            cell.vertices.push_back(Vector(0, 1));
+
+            for (int j = 0; j < N; j++) {
+                if (i == j) continue;
+
+                cell = clip_by_bisector(
+                    cell,
+                    points[i],
+                    points[j],
+                    weights[i],
+                    weights[j]
+                );
+
+                if (cell.vertices.empty()) break;
+            }
+
+            cells[i] = cell;
+        }
     }
+        //      (Lab 3, fluids) : also clip it by a disk of radius sqrt(w_i - w_air) centered at Pi
 
 
     static Polygon clip_by_edge(const Polygon& V, const Vector& u, const Vector& v) {
@@ -216,14 +250,55 @@ public:
 
         Polygon result;
 
+        if (V.vertices.empty()) return result;
+
+        Vector M = (Pi + Pj) / 2.0;
+        Vector normal = Pj - Pi;
+
+        auto inside = [&](const Vector& X) {
+            return dot(X - M, normal) <= 1e-12;
+        };
+
+        int N = V.vertices.size();
+
+        for (int i = 0; i < N; i++) {
+
+            Vector A = V.vertices[(i - 1 + N) % N];
+            Vector B = V.vertices[i];
+
+            bool A_inside = inside(A);
+            bool B_inside = inside(B);
+
+            double denom = dot(B - A, normal);
+
+            Vector P;
+
+            if (std::abs(denom) > 1e-12) {
+                double t = dot(M - A, normal) / denom;
+                P = A + t * (B - A);
+            }
+
+            if (B_inside) {
+                if (!A_inside && std::abs(denom) > 1e-12) {
+                    result.vertices.push_back(P);
+                }
+
+                result.vertices.push_back(B);
+            }
+            else if (A_inside) {
+                if (std::abs(denom) > 1e-12) {
+                    result.vertices.push_back(P);
+                }
+            }
+        }
+
         return result;
     }
-
 
     std::vector<Vector> points;    // Lab 1 (Voronoi) : the sites to consider
 
     std::vector<double> weights;   // Lab 2 (OT) : the weight associated to each site (the Laguerre weight, i.e. the dual optimal transport variables to be optimized)
-    
+        
     std::vector<Polygon> cells;   // Lab 1 : the polygons representing each individual cell
 
 };
@@ -337,7 +412,7 @@ public:
 };
 
 // saves a static svg file. The polygon vertices are supposed to be in the range [0..1], and a canvas of size 1000x1000 is created
-void save_svg(const std::vector<Polygon>& polygons, std::string filename, std::string fillcol = "none") {
+void save_svg(const std::vector<Polygon>& polygons, std::string filename, const std::vector<Vector>* points = NULL, std::string fillcol = "none") {
     FILE* f = fopen(filename.c_str(), "w+");
     fprintf(f, "<svg xmlns = \"http://www.w3.org/2000/svg\" width = \"1000\" height = \"1000\">\n");
     for (int i = 0; i < polygons.size(); i++) {
@@ -349,6 +424,16 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, std::s
         fprintf(f, "\"\nfill = \"%s\" stroke = \"black\"/>\n", fillcol.c_str());
         fprintf(f, "</g>\n");
     }
+
+    if (points) {
+        fprintf(f, "<g>\n");
+        for (int i = 0; i < points->size(); i++) {
+            fprintf(f, "<circle cx = \"%3.3f\" cy = \"%3.3f\" r = \"3\" />\n", (*points)[i][0] * 1000., 1000. - (*points)[i][1] * 1000);
+        }
+        fprintf(f, "</g>\n");
+
+    }
+
     fprintf(f, "</svg>\n");
     fclose(f);
 }
@@ -359,18 +444,26 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, std::s
 
 
 
+
 int main() {
 
-    Polygon p;
-    p.vertices.push_back(Vector(0.1, 0.2));
-    p.vertices.push_back(Vector(0.6, 0.4));
-    p.vertices.push_back(Vector(0.5, 0.7));
-    p.vertices.push_back(Vector(0.2, 0.5));
+    VoronoiDiagram vor;
 
-    std::vector<Polygon> s;
-    s.push_back(p);
+    int N = 100;
+    vor.points.resize(N);
+    vor.weights.assign(N, 0.0);
 
-    save_frame(s, "toto");
-    save_svg(s, "toto.svg");
+    for (int i = 0; i < N; i++) {
+        double x = (double)rand() / RAND_MAX;
+        double y = (double)rand() / RAND_MAX;
+
+        vor.points[i] = Vector(x, y);
+    }
+
+    vor.compute();
+
+    save_frame(vor.cells, "voronoi");
+    save_svg(vor.cells, "voronoi.svg", &vor.points, "white");
+
     return 0;
 }
